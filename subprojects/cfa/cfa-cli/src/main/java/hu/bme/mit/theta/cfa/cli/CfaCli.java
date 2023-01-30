@@ -61,6 +61,7 @@ import hu.bme.mit.theta.common.table.BasicTableWriter;
 import hu.bme.mit.theta.common.table.TableWriter;
 import hu.bme.mit.theta.common.visualization.Graph;
 import hu.bme.mit.theta.common.visualization.writer.GraphvizWriter;
+import hu.bme.mit.theta.common.visualization.writer.WebDebuggerLogger;
 import hu.bme.mit.theta.solver.SolverFactory;
 import hu.bme.mit.theta.solver.SolverManager;
 import hu.bme.mit.theta.solver.smtlib.SmtLibSolverManager;
@@ -255,6 +256,7 @@ public class CfaCli {
 	private CFA loadModel() throws Exception {
 		try (InputStream inputStream = new FileInputStream(model)) {
 			try {
+				WebDebuggerLogger.getInstance().setTitle(model.split("[\\\\/]")[model.split("[\\\\/]").length - 1]);
 				return CfaDslManager.createCfa(inputStream);
 			} catch (final Exception ex) {
 				throw new Exception("Could not parse CFA: " + ex.getMessage(), ex);

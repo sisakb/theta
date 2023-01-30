@@ -28,6 +28,7 @@ import hu.bme.mit.theta.analysis.expr.ExprState;
 import hu.bme.mit.theta.common.Utils;
 import hu.bme.mit.theta.common.logging.Logger;
 import hu.bme.mit.theta.common.logging.Logger.Level;
+import hu.bme.mit.theta.common.visualization.writer.WebDebuggerLogger;
 
 import java.util.Optional;
 
@@ -72,6 +73,7 @@ public final class SingleExprTraceRefiner<S extends ExprState, A extends ExprAct
 		final Trace<S, A> traceToConcretize = cexToConcretize.toTrace();
 		logger.write(Level.INFO, "|  |  Trace length: %d%n", traceToConcretize.length());
 		logger.write(Level.DETAIL, "|  |  Trace: %s%n", traceToConcretize);
+		WebDebuggerLogger.getInstance().addTrace(traceToConcretize.toString());
 
 		logger.write(Level.SUBSTEP, "|  |  Checking trace...");
 		final ExprTraceStatus<R> cexStatus = exprTraceChecker.check(traceToConcretize);
