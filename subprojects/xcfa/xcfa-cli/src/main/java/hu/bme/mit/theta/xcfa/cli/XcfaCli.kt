@@ -30,9 +30,15 @@ import hu.bme.mit.theta.c2xcfa.getXcfaFromC
 import hu.bme.mit.theta.common.CliUtils
 import hu.bme.mit.theta.common.logging.ConsoleLogger
 import hu.bme.mit.theta.common.logging.Logger
-import hu.bme.mit.theta.common.visualization.Graph
+import hu.bme.mit.theta.common.visualization.*
 import hu.bme.mit.theta.common.visualization.writer.GraphvizWriter
+import hu.bme.mit.theta.core.stmt.AssignStmt
+import hu.bme.mit.theta.core.type.anytype.RefExpr
+import hu.bme.mit.theta.core.type.arraytype.ArrayWriteExpr
+import hu.bme.mit.theta.core.type.inttype.IntModExpr
 import hu.bme.mit.theta.frontend.transformation.ArchitectureConfig
+import hu.bme.mit.theta.frontend.transformation.grammar.expression.Dereference
+import hu.bme.mit.theta.frontend.transformation.grammar.expression.Reference
 import hu.bme.mit.theta.frontend.transformation.grammar.preprocess.BitwiseChecker
 import hu.bme.mit.theta.solver.smtlib.SmtLibSolverManager
 import hu.bme.mit.theta.xcfa.analysis.ErrorDetection
@@ -40,8 +46,10 @@ import hu.bme.mit.theta.xcfa.analysis.XcfaAction
 import hu.bme.mit.theta.xcfa.analysis.XcfaState
 import hu.bme.mit.theta.xcfa.cli.utils.XcfaWitnessWriter
 import hu.bme.mit.theta.xcfa.cli.witnesses.XcfaTraceConcretizer
+import hu.bme.mit.theta.xcfa.getFlatLabels
 import hu.bme.mit.theta.xcfa.model.toDot
 import hu.bme.mit.theta.xcfa.passes.LbePass
+import java.awt.Color
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileReader
@@ -53,6 +61,64 @@ import javax.script.ScriptEngineManager
 import javax.script.SimpleBindings
 import kotlin.system.exitProcess
 
+
+interface ConstraintRule {
+    val p: String
+    val q: String
+}
+
+class ReferencingConstraintRule(override val p: String, override val q: String) : ConstraintRule
+class DereferencingWriteConstraintRule(override val p: String, override val q: String) : ConstraintRule
+class DereferencingReadConstraintRule(override val p: String, override val q: String) : ConstraintRule
+class AliasingConstraintRule(override val p: String, override val q: String) : ConstraintRule
+
+class DisjointSet<T> {
+    private val parent = mutableMapOf<T, T>()
+    private val rank = mutableMapOf<T, Int>()
+
+    fun makeSet(x: T) {
+        parent[x] = x
+        rank[x] = 0
+    }
+
+    fun find(x: T): T {
+        if (parent[x] != x) {
+            parent[x] = find(parent[x]!!)
+        }
+        return parent[x]!!
+    }
+
+    fun union(x: T, y: T) {
+        val xRoot = find(x)
+        val yRoot = find(y)
+
+        if (xRoot == yRoot) {
+            return
+        }
+
+        if (rank[xRoot]!! < rank[yRoot]!!) {
+            parent[xRoot] = yRoot
+        } else if (rank[xRoot]!! > rank[yRoot]!!) {
+            parent[yRoot] = xRoot
+        } else {
+            parent[yRoot] = xRoot
+            rank[xRoot] = rank[xRoot]!! + 1
+        }
+    }
+
+    fun getSets(): Map<T, List<T>> {
+        val sets = mutableMapOf<T, MutableList<T>>()
+        for (x in parent.keys) {
+            val root = find(x)
+            if (sets.containsKey(root)) {
+                sets[root]!!.add(x)
+            } else {
+                sets[root] = mutableListOf(x)
+            }
+        }
+        return sets
+    }
+}
 
 class XcfaCli(private val args: Array<String>) {
     //////////// CONFIGURATION OPTIONS BEGIN ////////////
@@ -175,6 +241,228 @@ class XcfaCli(private val args: Array<String>) {
             exitProcess(ExitCodes.FRONTEND_FAILED.code)
         }
         swFrontend.reset().start()
+
+        // Pointer Analysis
+        val pointerConstraintRules = mutableListOf<ConstraintRule>()
+        val pointerVariables = mutableSetOf<String>()
+
+        // Andersen's Pointer Analysis
+
+        val main = xcfa.initProcedures.first().first
+        val edges = main.edges
+        edges.forEach { edge ->
+            val labels = edge.label.getFlatLabels()
+            labels.forEach { label ->
+                val stmt = label.toStmt()
+                if (stmt is AssignStmt<*>) {
+                    val assignStmt = stmt as AssignStmt<*>
+                    val expr = assignStmt.expr
+                    if (expr is Reference<*, *>) {
+                        val target = assignStmt.varDecl.name
+                        val refName = expr.op.toString()
+                        // println("Referencing: $target = &$refName ($assignStmt)")
+                        // mayPointTo.getOrPut(target) { mutableSetOf() }.add(refName)
+                        val p = target;
+                        val i = refName;
+                        // p = &i
+                        // i ∈ pts(p)
+                        // pointsTo.getOrPut(p) { mutableListOf() }.add(mutableSetOf(i))
+                        pointerConstraintRules.add(ReferencingConstraintRule(p, i))
+                        pointerVariables.add(p)
+                        pointerVariables.add(i)
+                    }
+                    if (expr is ArrayWriteExpr<*, *> && expr.array is RefExpr<*>) {
+                        // println("Dereferencing-write: *${expr.index} = ${expr.elem} ($assignStmt)")
+                        val p = expr.index.toString()
+                        val q = expr.elem.toString()
+                        // *p = q
+                        // ∀x ∈ pts(p): pts(q) ⊆ pts(x)
+                        pointerConstraintRules.add(DereferencingWriteConstraintRule(p, q))
+                        pointerVariables.add(p)
+                        pointerVariables.add(q)
+                    }
+                    if (expr is IntModExpr && expr.leftOp is Dereference<*, *>) {
+                        val leftOp = expr.leftOp as Dereference<*, *>
+                        val op = leftOp.op as RefExpr<*>
+                        val decl = op.decl
+                        // println("Dereferencing-read: ${assignStmt.varDecl.name} = *${decl.name}")
+                        val p = assignStmt.varDecl.name
+                        val q = decl.name
+                        // p = *q
+                        // ∀x ∈ pts(q): pts(x) ⊆ pts(p)
+                        pointerConstraintRules.add(DereferencingReadConstraintRule(p, q))
+                        pointerVariables.add(p)
+                        pointerVariables.add(q)
+                    }
+                    if (expr is RefExpr<*>) {
+                        // println("Aliasing ${stmt.varDecl.name} = ${expr.decl.name}")
+                        val p = stmt.varDecl.name
+                        val q = expr.decl.name
+                        // p = q
+                        // pts(p) ⊆ pts(q)
+                        pointerConstraintRules.add(AliasingConstraintRule(p, q))
+                        pointerVariables.add(p)
+                        pointerVariables.add(q)
+                    }
+                }
+            }
+        }
+
+        val andersensPointsTo = HashMap<String, MutableSet<String>>()
+        var lastPointsToLengths = andersensPointsTo.map { it.value.size }.toList()
+
+        while (true) {
+            pointerConstraintRules.forEach { rule ->
+                when (rule) {
+                    is ReferencingConstraintRule -> {
+                        val p = rule.p
+                        val i = rule.q
+                        andersensPointsTo.getOrPut(p) { mutableSetOf() }.add(i)
+                    }
+
+                    is DereferencingWriteConstraintRule -> {
+                        val p = rule.p
+                        val q = rule.q
+                        val xs = andersensPointsTo.getOrPut(p) { mutableSetOf() }
+                        xs.forEach { x ->
+                            andersensPointsTo.getOrPut(x) { mutableSetOf() }.addAll(andersensPointsTo.getOrDefault(q, mutableSetOf()))
+                        }
+                    }
+
+                    is DereferencingReadConstraintRule -> {
+                        val p = rule.p
+                        val q = rule.q
+                        val xs = andersensPointsTo.getOrPut(q) { mutableSetOf() }
+                        xs.forEach { x ->
+                            andersensPointsTo.getOrPut(p) { mutableSetOf() }.addAll(andersensPointsTo.getOrDefault(x, mutableSetOf()))
+                        }
+                    }
+
+                    is AliasingConstraintRule -> {
+                        val p = rule.p
+                        val q = rule.q
+                        andersensPointsTo.getOrPut(p) { mutableSetOf() }.addAll(andersensPointsTo.getOrDefault(q, mutableSetOf()))
+                    }
+                }
+            }
+
+            val newPointsToLengths = andersensPointsTo.map { it.value.size }.toList()
+
+            if (lastPointsToLengths == newPointsToLengths) break
+            lastPointsToLengths = newPointsToLengths
+        }
+
+        andersensPointsTo.forEach { (target, listOfRefs) -> run {
+            listOfRefs.remove(target)
+        }}
+
+        andersensPointsTo.forEach { (target, listOfRefs) -> run {
+            println("$target -> $listOfRefs")
+        }}
+
+        val andersenGraph = Graph(input!!.nameWithoutExtension, input!!.name + " - Andersen's Pointer Analysis")
+        val attrsBuilder = NodeAttributes.builder().shape(Shape.RECTANGLE)
+                .fillColor(Color.WHITE).lineColor(Color.BLACK).alignment(Alignment.LEFT)
+        pointerVariables.forEach {
+            andersenGraph.addNode("\"" + it + "\"", attrsBuilder.label(it).build())
+        }
+        val eAttrs = EdgeAttributes.builder().label("").color(Color.BLACK).lineStyle(LineStyle.NORMAL).font("courier").build()
+        andersensPointsTo.forEach { (target, listOfRefs) -> run {
+            listOfRefs.forEach {
+                andersenGraph.addEdge("\"" + target + "\"", "\"" + it + "\"", eAttrs)
+            }
+        }}
+        GraphvizWriter.getInstance().writeFileAutoConvert(andersenGraph, "andersen.dot")
+
+        // / Andersens Pointer Analysis
+
+        // Steensgaard's Pointer Analysis
+
+        val steensgaardsDisjointSets = DisjointSet<String>()
+        val steengaardsEdges = mutableSetOf<Pair<String, String>>()
+        pointerVariables.forEach { steensgaardsDisjointSets.makeSet(it) }
+
+        fun join(x: String, y: String) {
+            if (x == y) return
+            val xStar = steengaardsEdges.find { it.first == x }?.second
+            val yStar = steengaardsEdges.find { it.first == y }?.second
+            steensgaardsDisjointSets.union(x, y)
+            if (xStar != null && yStar != null) join(xStar, yStar)
+        }
+        for (i in 1..3) {
+            pointerConstraintRules.forEach{ rule ->
+                when (rule) {
+                    is ReferencingConstraintRule -> {
+                        // p = &q
+                        val p = rule.p
+                        val i = rule.q
+                        val pStar = steengaardsEdges.find { it.first == p }?.second
+                        steengaardsEdges.add(Pair(p, i))
+                        if (pStar != null) {
+                            join(pStar, i)
+                        }
+                    }
+
+                    is DereferencingWriteConstraintRule -> {
+                        // *p = q
+                        val p = rule.p
+                        val q = rule.q
+                        val pStar = steengaardsEdges.find { it.first == p }?.second
+                        val pStarStar = steengaardsEdges.find { it.first == pStar }?.second
+                        val qStar = steengaardsEdges.find { it.first == q }?.second
+                        if (pStar != null && pStarStar != null && qStar != null) {
+                            join(pStarStar, qStar)
+                        }
+                    }
+
+                    is DereferencingReadConstraintRule -> {
+                        // p = *q
+                        val p = rule.p
+                        val q = rule.q
+                        val pStar = steengaardsEdges.find { it.first == p }?.second
+                        val qStar = steengaardsEdges.find { it.first == q }?.second
+                        val qStarStar = steengaardsEdges.find { it.first == qStar }?.second
+                        if (pStar != null && qStar != null && qStarStar != null) {
+                            join(pStar, qStarStar)
+                        }
+                    }
+
+                    is AliasingConstraintRule -> {
+                        // p = q
+                        val p = rule.p
+                        val q = rule.q
+                        val pStar = steengaardsEdges.find { it.first == p }?.second
+                        val qStar = steengaardsEdges.find { it.first == q }?.second
+                        if (qStar != null) steengaardsEdges.add(Pair(p, qStar))
+                        if (pStar != null && qStar != null) {
+                            join(pStar, qStar)
+                        }
+                    }
+                }
+            }
+        }
+
+        val steensgaardsGraph = Graph(input!!.nameWithoutExtension, input!!.name + " - Steensgaard's Pointer Analysis")
+        val steensgaardsAttrsBuilder = NodeAttributes.builder().shape(Shape.RECTANGLE)
+                .fillColor(Color.WHITE).lineColor(Color.BLACK).alignment(Alignment.LEFT)
+        steensgaardsDisjointSets.getSets().forEach { set ->
+            val label = set.value.joinToString(", ")
+            steensgaardsGraph.addNode("\"" + set.key + "\"", steensgaardsAttrsBuilder.label(label).build())
+        }
+        val steensgaardsEAttrs = EdgeAttributes.builder().label("").color(Color.BLACK).lineStyle(LineStyle.NORMAL).font("courier").build()
+
+        val uniqueSteensgaardsEdges = steengaardsEdges.map { Pair(steensgaardsDisjointSets.find(it.first), steensgaardsDisjointSets.find(it.second)) }.toSet()
+
+        uniqueSteensgaardsEdges.forEach { (p, q) ->
+            steensgaardsGraph.addEdge("\"" + p + "\"", "\"" + q + "\"", steensgaardsEAttrs)
+        }
+
+        GraphvizWriter.getInstance().writeFileAutoConvert(steensgaardsGraph, "steensgaard.dot")
+
+
+        // / Steensgaard's Pointer Analysis
+
+        exitProcess(0)
 
         val gsonForOutput = getGson()
 
