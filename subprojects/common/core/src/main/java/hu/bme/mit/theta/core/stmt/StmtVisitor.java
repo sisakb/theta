@@ -25,6 +25,8 @@ public interface StmtVisitor<P, R> {
 
 	<DeclType extends Type> R visit(AssignStmt<DeclType> stmt, P param);
 
+	// visit derefwritestmt
+
 	<DeclType extends Type> R visit(HavocStmt<DeclType> stmt, P param);
 
 	R visit(SequenceStmt stmt, P param);

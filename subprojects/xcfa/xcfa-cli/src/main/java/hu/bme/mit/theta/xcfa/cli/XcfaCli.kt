@@ -372,7 +372,7 @@ class XcfaCli(private val args: Array<String>) {
                 andersenGraph.addEdge("\"" + target + "\"", "\"" + it + "\"", eAttrs)
             }
         }}
-        GraphvizWriter.getInstance().writeFileAutoConvert(andersenGraph, "andersen.dot")
+        GraphvizWriter.getInstance().writeFileAutoConvert(andersenGraph, "andersen" + input!!.nameWithoutExtension + ".dot")
 
         // / Andersens Pointer Analysis
 
@@ -457,7 +457,7 @@ class XcfaCli(private val args: Array<String>) {
             steensgaardsGraph.addEdge("\"" + p + "\"", "\"" + q + "\"", steensgaardsEAttrs)
         }
 
-        GraphvizWriter.getInstance().writeFileAutoConvert(steensgaardsGraph, "steensgaard.dot")
+        GraphvizWriter.getInstance().writeFileAutoConvert(steensgaardsGraph, "steensgaard" + input!!.nameWithoutExtension + ".dot")
 
 
         // / Steensgaard's Pointer Analysis
