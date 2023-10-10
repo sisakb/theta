@@ -49,7 +49,7 @@ class XcfaAasporLts(xcfa: XCFA,
         for (firstActions in persistentSetFirstActions) {
             // Variables that have been ignored (if they would be in the precision, more actions have had to be added to the persistent set)
             val ignoredVars = mutableSetOf<Decl<out Type>>()
-            val persistentSet = calculatePersistentSet(allEnabledActions, firstActions, prec,
+            val persistentSet = calculatePersistentSet(allEnabledActions, firstActions, state, prec,
                 ignoredVars)
             if (minimalPersistentSet.isEmpty() || persistentSet.size < minimalPersistentSet.size) {
                 minimalPersistentSet = persistentSet.toMutableSet()
@@ -76,7 +76,7 @@ class XcfaAasporLts(xcfa: XCFA,
      * @return a persistent set of enabled actions in the current abstraction
      */
     private fun calculatePersistentSet(enabledActions: Collection<XcfaAction>,
-        firstActions: Collection<XcfaAction>, prec: Prec,
+        firstActions: Collection<XcfaAction>, state: XcfaState<*>, prec: Prec,
         ignoredVars: MutableSet<Decl<out Type>>): Set<XcfaAction> {
         if (firstActions.any(this::isBackwardAction)) {
             return enabledActions.toSet()
@@ -96,7 +96,7 @@ class XcfaAasporLts(xcfa: XCFA,
                 // (because it is dependent with an action already in the persistent set)
                 val potentialIgnoredVars = mutableSetOf<Decl<out Type>>()
                 if (persistentSet.any { persistentSetAction ->
-                        areDependents(persistentSetAction, action, prec, potentialIgnoredVars)
+                        areDependents(persistentSetAction, action, state, prec, potentialIgnoredVars)
                     }) {
                     if (isBackwardAction(action)) {
                         return enabledActions.toSet() // see POR algorithm for the reason of removing backward transitions
@@ -115,13 +115,13 @@ class XcfaAasporLts(xcfa: XCFA,
         return persistentSet
     }
 
-    private fun areDependents(persistentSetAction: XcfaAction, action: XcfaAction, prec: Prec,
+    private fun areDependents(persistentSetAction: XcfaAction, action: XcfaAction, state: XcfaState<*>, prec: Prec,
         ignoredVariables: MutableSet<Decl<out Type?>>): Boolean {
         if (isSameProcess(persistentSetAction, action)) {
             return true
         }
-        val usedByPersistentSetAction = getCachedUsedSharedObjects(
-            getTransitionOf(persistentSetAction))
+        val usedByPersistentSetAction = getDirectlyUsedSharedObjects(
+            getTransitionOf(persistentSetAction), state)
         val influencedSharedObjects = getInfluencedSharedObjects(getTransitionOf(action))
         for (varDecl in influencedSharedObjects) {
             if (usedByPersistentSetAction.contains(varDecl)) {

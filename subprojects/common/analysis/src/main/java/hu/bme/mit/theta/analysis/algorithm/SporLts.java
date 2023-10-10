@@ -68,7 +68,7 @@ public abstract class SporLts<S extends State, A extends Action, T> implements L
         Set<A> minimalPersistentSet = new LinkedHashSet<>();
         Collection<Collection<A>> persistentSetFirstActions = getPersistentSetFirstActions(allEnabledActions);
         for (Collection<A> firstActions : persistentSetFirstActions) {
-            Set<A> persistentSet = calculatePersistentSet(allEnabledActions, firstActions);
+            Set<A> persistentSet = calculatePersistentSet(allEnabledActions, firstActions, state);
             if (minimalPersistentSet.size() == 0 || persistentSet.size() < minimalPersistentSet.size()) {
                 minimalPersistentSet = persistentSet;
             }
@@ -84,7 +84,7 @@ public abstract class SporLts<S extends State, A extends Action, T> implements L
      * @param firstActions   the actions that will be added to the persistent set as the first actions
      * @return a persistent set of enabled actions
      */
-    protected Set<A> calculatePersistentSet(Collection<A> enabledActions, Collection<A> firstActions) {
+    protected Set<A> calculatePersistentSet(Collection<A> enabledActions, Collection<A> firstActions, S state) {
         if (firstActions.stream().anyMatch(this::isBackwardAction)) {
             return new LinkedHashSet<>(enabledActions);
         }
@@ -100,7 +100,7 @@ public abstract class SporLts<S extends State, A extends Action, T> implements L
             for (A action : otherActions) {
                 // for every action that is not in the persistent set it is checked whether it should be added to the persistent set
                 // (because it is dependent with an action already in the persistent set)
-                if (persistentSet.stream().anyMatch(persistentSetAction -> areDependents(persistentSetAction, action))) {
+                if (persistentSet.stream().anyMatch(persistentSetAction -> areDependents(persistentSetAction, action, state))) {
                     if (isBackwardAction(action)) {
                         return new LinkedHashSet<>(enabledActions); // see POR algorithm for the reason of removing backward transitions
                     }
@@ -143,7 +143,7 @@ public abstract class SporLts<S extends State, A extends Action, T> implements L
      * @param action              the other action (not in the persistent set)
      * @return true, if the two actions are dependent in the context of persistent sets
      */
-    protected boolean areDependents(A persistentSetAction, A action) {
+    protected boolean areDependents(A persistentSetAction, A action, S state) {
         var usedByPersistentSetAction = getCachedUsedSharedObjects(getTransitionOf(persistentSetAction));
         return isSameProcess(persistentSetAction, action) ||
                 getInfluencedSharedObjects(getTransitionOf(action)).stream().anyMatch(usedByPersistentSetAction::contains);

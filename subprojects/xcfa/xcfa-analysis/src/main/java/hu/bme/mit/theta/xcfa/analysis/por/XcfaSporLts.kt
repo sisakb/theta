@@ -22,6 +22,7 @@ import hu.bme.mit.theta.core.type.Type
 import hu.bme.mit.theta.xcfa.analysis.XcfaAction
 import hu.bme.mit.theta.xcfa.analysis.XcfaState
 import hu.bme.mit.theta.xcfa.analysis.getXcfaLts
+import hu.bme.mit.theta.xcfa.analysis.pointers.AndersensPointerAnalysis
 import hu.bme.mit.theta.xcfa.collectVars
 import hu.bme.mit.theta.xcfa.getFlatLabels
 import hu.bme.mit.theta.xcfa.isAtomicBegin
@@ -77,9 +78,26 @@ open class XcfaSporLts(protected val xcfa: XCFA) : SporLts<XcfaState<*>, XcfaAct
      */
     override fun getDirectlyUsedSharedObjects(edge: XcfaEdge): Set<VarDecl<out Type?>> {
         val globalVars = xcfa.vars.map(XcfaGlobalVar::wrappedVar)
-        return edge.getFlatLabels().flatMap { label ->
+        // TODO: Don't run pointer analysis every time
+        val pointerStore = AndersensPointerAnalysis().run(xcfa)
+        val varDecls = edge.getFlatLabels().flatMap { label ->
             label.collectVars().filter { it in globalVars }
         }.toSet()
+        return varDecls + varDecls.flatMap { pointerStore.pointsTo(it) }
+    }
+
+    fun getDirectlyUsedSharedObjects(edge: XcfaEdge, state: XcfaState<*>): Set<VarDecl<out Type?>> {
+        val globalVars = xcfa.vars.map(XcfaGlobalVar::wrappedVar)
+        val varDecls = edge.getFlatLabels().flatMap { label ->
+            label.collectVars().filter { it in globalVars }
+        }.toSet()
+        return varDecls + varDecls.flatMap { state.pointerStore.pointsTo(it) }
+    }
+
+    override fun areDependents(persistentSetAction: XcfaAction?, action: XcfaAction?, state: XcfaState<*>): Boolean {
+        val usedByPersistentSetAction: Set<Decl<*>?> = getDirectlyUsedSharedObjects(getTransitionOf(persistentSetAction!!), state)
+        return isSameProcess(persistentSetAction, action!!) ||
+                getInfluencedSharedObjects(getTransitionOf(action)).stream().anyMatch { o: Any? -> usedByPersistentSetAction.contains(o) }
     }
 
     /**
