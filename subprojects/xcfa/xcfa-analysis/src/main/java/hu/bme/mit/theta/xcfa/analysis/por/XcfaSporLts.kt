@@ -19,6 +19,7 @@ import hu.bme.mit.theta.analysis.algorithm.SporLts
 import hu.bme.mit.theta.core.decl.Decl
 import hu.bme.mit.theta.core.decl.VarDecl
 import hu.bme.mit.theta.core.type.Type
+import hu.bme.mit.theta.core.utils.PointerStore
 import hu.bme.mit.theta.xcfa.analysis.XcfaAction
 import hu.bme.mit.theta.xcfa.analysis.XcfaState
 import hu.bme.mit.theta.xcfa.analysis.getXcfaLts
@@ -39,6 +40,7 @@ open class XcfaSporLts(protected val xcfa: XCFA) : SporLts<XcfaState<*>, XcfaAct
         private val simpleXcfaLts = getXcfaLts()
     }
 
+    protected val xcfaPointerStore: PointerStore = AndersensPointerAnalysis().run(xcfa)
     init {
         collectBackwardTransitions()
     }
@@ -78,12 +80,10 @@ open class XcfaSporLts(protected val xcfa: XCFA) : SporLts<XcfaState<*>, XcfaAct
      */
     override fun getDirectlyUsedSharedObjects(edge: XcfaEdge): Set<VarDecl<out Type?>> {
         val globalVars = xcfa.vars.map(XcfaGlobalVar::wrappedVar)
-        // TODO: Don't run pointer analysis every time
-        val pointerStore = AndersensPointerAnalysis().run(xcfa)
         val varDecls = edge.getFlatLabels().flatMap { label ->
             label.collectVars().filter { it in globalVars }
         }.toSet()
-        return varDecls + varDecls.flatMap { pointerStore.pointsTo(it) }
+        return varDecls + varDecls.flatMap { xcfaPointerStore.pointsTo(it) }
     }
 
     fun getDirectlyUsedSharedObjects(edge: XcfaEdge, state: XcfaState<*>): Set<VarDecl<out Type?>> {
